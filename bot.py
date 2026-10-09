@@ -37,9 +37,13 @@ MAX_SIZE_MB = int(os.getenv("MAX_TELEGRAM_SIZE_MB","50")) # 50ට අඩු ස�
 LOGO_PATH = "TIKTOKLOGO.png"
 
 if not BOT_TOKEN:
+<<<<<<< HEAD
     raise ValueError("BOT_TOKEN missing")
+=======
+    raise ValueError("BOT_TOKEN missing in.env")
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 DATA_FILE = "bot_data.json"
@@ -50,6 +54,7 @@ if os.path.exists(DATA_FILE):
         with open(DATA_FILE,'r') as f: DATA=json.load(f)
         DATA.setdefault("cache", {}); DATA.setdefault("history", {}); DATA.setdefault("stats", {"total":0,"today":0,"last_reset":str(datetime.now().date())})
         DATA.setdefault("banned", []); DATA.setdefault("users", {})
+<<<<<<< HEAD
     except: DATA={"cache":{},"history":{},"stats":{"total":0,"today":0,"last_reset":str(datetime.now().date())},"banned":[],"users":{}}
 else: DATA={"cache":{},"history":{},"stats":{"total":0,"today":0,"last_reset":str(datetime.now().date())},"banned":[],"users":{}}
 
@@ -57,6 +62,18 @@ def save_data():
     try:
         with open(DATA_FILE,'w') as f: json.dump(DATA,f)
     except: pass
+=======
+    except:
+        DATA={"cache":{},"history":{},"stats":{"total":0,"today":0,"last_reset":str(datetime.now().date())},"banned":[],"users":{}}
+else:
+    DATA={"cache":{},"history":{},"stats":{"total":0,"today":0,"last_reset":str(datetime.now().date())},"banned":[],"users":{}}
+
+def save_data():
+    try:
+        with open(DATA_FILE,'w') as f: json.dump(DATA,f, indent=2)
+    except Exception as e:
+        logger.error(f"Save error: {e}")
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
 
 def is_admin(uid): return uid in ADMIN_IDS
 def get_rank(c):
@@ -89,9 +106,19 @@ def beautiful_caption(d, uid=None):
 def upload_to_catbox(file_path):
     try:
         with open(file_path,'rb') as f:
+<<<<<<< HEAD
             r = requests.post("https://catbox.moe/user/api.php", data={"reqtype":"fileupload"}, files={"fileToUpload": f}, timeout=90)
         if r.status_code==200 and "catbox" in r.text: return r.text.strip()
     except Exception as e: logger.error(f"Catbox failed: {e}")
+=======
+            r = requests.post("https://catbox.moe/user/api.php",
+                data={"reqtype":"fileupload"},
+                files={"fileToUpload": f}, timeout=90)
+        if r.status_code==200 and "catbox" in r.text:
+            return r.text.strip()
+    except Exception as e:
+        logger.error(f"Catbox upload failed: {e}")
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
     return None
 
 def fast_download_file(url, dest_path):
@@ -103,6 +130,12 @@ def fast_download_file(url, dest_path):
             with open(dest_path,'wb') as f:
                 for chunk in r.iter_content(chunk_size=1024*1024*2):
                     if chunk: f.write(chunk)
+<<<<<<< HEAD
+=======
+    elapsed=time.time()-start
+    size_mb=os.path.getsize(dest_path)/(1024*1024)
+    logger.info(f"Fast DL: {size_mb:.1f}MB in {elapsed:.1f}s")
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
     return dest_path
 
 def add_watermark_if_possible(video_path, logo_path, output_path):
@@ -111,14 +144,21 @@ def add_watermark_if_possible(video_path, logo_path, output_path):
         subprocess.run(["ffmpeg","-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
         cmd=["ffmpeg","-y","-i",video_path,"-i",logo_path,"-filter_complex","[1][0]scale2ref=w=iw*0.18:h=ow/mdar[wm][vid];[vid][wm]overlay=W-w-20:20","-codec:a","copy",output_path]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+<<<<<<< HEAD
         if os.path.exists(output_path) and os.path.getsize(output_path)>1000: return output_path
     except: pass
+=======
+        if os.path.exists(output_path) and os.path.getsize(output_path)>1000:
+            return output_path
+    except Exception as e:
+        logger.warning(f"Watermark failed: {e}")
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
     return video_path
 
 def download_tiktok(url, tmpdir, quality="hd"):
     r = requests.get(f"https://www.tikwm.com/api/?url={url}", headers={'User-Agent':'Mozilla/5.0'}, timeout=20)
     j = r.json()
-    if j.get('code')!= 0: raise Exception("API failed")
+    if j.get('code')!= 0: raise Exception("API failed, try again")
     d = j['data']
     if d.get('images'): return {"type":"slideshow","data":d}
     vurl = d.get('hdplay') or d.get('play')
@@ -141,7 +181,11 @@ def download_tiktok(url, tmpdir, quality="hd"):
     return {"type":"video","path":final_path,"cover":cover_path if os.path.exists(cover_path) else None,"data":d,"url":vurl}
 
 async def animate_downloading(msg, quality="HD"):
+<<<<<<< HEAD
     frames=[f"╭─ ⬇️ {quality} ─╮\n│ ◐ 10% Turbo ⚡\n╰─╯",f"╭─ ⬇️ {quality} ─╮\n│ ◓ 45% Fast...\n╰─╯",f"╭─ ⬇️ {quality} ─╮\n│ ◑ 80% Fast...\n╰─╯"]
+=======
+    frames=[f"╭─ ⬇️ {quality} ─╮\n│ ◐ 10% Turbo ⚡\n╰─╯",f"╭─ ⬇️ {quality} ─╮\n│ ◓ 45% Fast...\n╰─╯",f"╭─ ⬇️ {quality} ─╮\n│ ◑ 80% Fast...\n╰─╯",f"╭─ ⚡ {quality} ─╮\n│ ◒ 95% Final...\n╰─╯"]
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
     i=0
     try:
         while True:
@@ -161,7 +205,12 @@ async def process_tiktok(update: Update, context, url: str, quality="hd"):
     if DATA["stats"].get("last_reset")!= str(datetime.now().date()):
         DATA["stats"]["today"]=0; DATA["stats"]["last_reset"]=str(datetime.now().date())
     save_data()
+<<<<<<< HEAD
     m = await update.message.reply_text(f"╭─ ⬇️ 𝗙𝗔𝗦𝗧 𝗗𝗟 {quality.upper()} ─╮\n│ ◐ 0% • Turbo ON ⚡\n╰─╯")
+=======
+
+    m = await update.message.reply_text(f"╭─ ⬇️ 𝗙𝗔𝗦𝗧 𝗗𝗟 {quality.upper()} ─╮\n│ ◐ 0% • Turbo ON ⚡\n╰─────────────────╯")
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
     anim_task = asyncio.create_task(animate_downloading(m, quality.upper()))
     tmpdir = tempfile.mkdtemp()
     try:
@@ -188,6 +237,7 @@ async def process_tiktok(update: Update, context, url: str, quality="hd"):
         short_id=str(uuid.uuid4())[:8]
         URL_STORE[short_id]={"url":url,"data":d,"title":title,"author":author}
         caption=beautiful_caption(d, update.effective_user.id)+f"\n📦 {size_mb:.1f} MB"
+<<<<<<< HEAD
         if size_mb > MAX_SIZE_MB and CATBOX_ENABLED:
             await m.edit_text(f"╭─ 📦 Large {size_mb:.1f}MB ─╮\n│ ⬆️ Catbox.moe...\n╰─╯")
             catbox_url = await asyncio.to_thread(upload_to_catbox, path)
@@ -201,6 +251,33 @@ async def process_tiktok(update: Update, context, url: str, quality="hd"):
                 await update.message.reply_text(txt, reply_markup=kb)
                 await m.delete(); return
         kb=InlineKeyboardMarkup([[InlineKeyboardButton(f"🎬 HD 1080p 💎", callback_data=f"q_hd_{short_id}")],[InlineKeyboardButton(f"📱 Original", callback_data=f"q_original_{short_id}"), InlineKeyboardButton(f"💧 Watermark", callback_data=f"q_watermark_{short_id}")],[InlineKeyboardButton(f"🎵 MP3", callback_data=f"mp3_{short_id}"), InlineKeyboardButton(f"🗑️ Delete", callback_data=f"del_{short_id}")]])
+=======
+
+        if size_mb > MAX_SIZE_MB and CATBOX_ENABLED:
+            await m.edit_text(f"╭─ 📦 Large {size_mb:.1f}MB ─╮\n│ ⬆️ Uploading to Catbox.moe...\n╰─────────────────╯")
+            catbox_url = await asyncio.to_thread(upload_to_catbox, path)
+            if catbox_url:
+                kb=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📥 Download from Catbox 📦", url=catbox_url)],
+                    [InlineKeyboardButton(f"🎵 Get MP3 ({size_mb:.0f}MB→5MB)", callback_data=f"mp3_{short_id}")],
+                ])
+                txt=f"""╭─ 📦 𝗟𝗔𝗥𝗚𝗘 𝗙𝗜𝗟𝗘 ───────────╮
+│ ⚠️ {size_mb:.1f} MB > {MAX_SIZE_MB}MB Limit
+│ 🎬 {title[:80]}
+│ 👤 @{author}
+├─ 📥 𝗗𝗢𝗪𝗡𝗟𝗢𝗔𝗗 ───────┤
+│ 🔗 {catbox_url}
+╰─ 💡 Valid 30+ days ─╯"""
+                await update.message.reply_text(txt, reply_markup=kb)
+                await m.delete()
+                return
+
+        kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🎬 HD 1080p 💎", callback_data=f"q_hd_{short_id}")],
+            [InlineKeyboardButton(f"📱 Original", callback_data=f"q_original_{short_id}"), InlineKeyboardButton(f"💧 Watermark", callback_data=f"q_watermark_{short_id}")],
+            [InlineKeyboardButton(f"🎵 MP3", callback_data=f"mp3_{short_id}"), InlineKeyboardButton(f"🗑️ Delete", callback_data=f"del_{short_id}")]
+        ])
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
         thumb_file = open(cover,'rb') if cover and os.path.exists(cover) else None
         with open(path,'rb') as vf:
             sent=await update.message.reply_video(video=vf, thumbnail=thumb_file, caption=caption, reply_markup=kb, supports_streaming=True, read_timeout=180, write_timeout=180)
@@ -288,7 +365,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 import yt_dlp
                 opts={'outtmpl':os.path.join(tmpdir,"audio.%(ext)s"),'format':'bestaudio/best','postprocessors':[{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'192'}],'quiet':True}
                 def dl():
+<<<<<<< HEAD
                     with yt_dlp.YoutubeDL(opts) as ydl: ydl.download([info['url']])
+=======
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        ydl.download([info['url']])
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
                 await asyncio.to_thread(dl)
                 mp3_path=None
                 for f in os.listdir(tmpdir):
@@ -297,6 +379,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     with open(mp3_path,'rb') as af:
                         await q.message.reply_audio(audio=af, title=info['title'][:60], performer=info['author'])
                     await m.delete()
+<<<<<<< HEAD
                 else: await m.edit_text("❌ MP3 failed")
             finally:
                 import shutil; shutil.rmtree(tmpdir, ignore_errors=True)
@@ -315,12 +398,34 @@ def main():
         print("Webhook cleared - No 409")
     except: pass
     print(f"Starting Bot... Logo:{os.path.exists(LOGO_PATH)} Catbox:{CATBOX_ENABLED} Limit:{MAX_SIZE_MB}MB AutoDel:{AUTO_DELETE_MIN}min")
+=======
+                else:
+                    await m.edit_text("❌ MP3 failed")
+            finally:
+                import shutil; shutil.rmtree(tmpdir, ignore_errors=True)
+    except Exception as e:
+        logger.error(f"Button error: {e}")
+
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id): return await update.message.reply_text("⛔ Not admin")
+    await update.message.reply_text(f"🔐 Admin • Users: {len(DATA['users'])} • Total: {DATA['stats']['total']} • Catbox: {CATBOX_ENABLED} • Logo: {os.path.exists(LOGO_PATH)}")
+
+def main():
+    if not BOT_TOKEN:
+        print("Missing BOT_TOKEN in.env")
+        return
+    print(f"Starting Bot... Logo:{os.path.exists(LOGO_PATH)} Catbox:{CATBOX_ENABLED} Limit:{MAX_SIZE_MB}MB")
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start_cmd))
     application.add_handler(CommandHandler("admin", admin_cmd))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+<<<<<<< HEAD
     print("Bot Running - Ready + Web Server for Ping")
+=======
+    print("Bot Running - Polling started")
+>>>>>>> f68d2c387811c255424b7c2591045a509407932c
     application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__=="__main__":

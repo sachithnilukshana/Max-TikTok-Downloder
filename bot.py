@@ -11,7 +11,6 @@ from telegram.constants import ChatAction, ParseMode
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== CONFIG =====
 load_dotenv()
 BOT_TOKEN=os.getenv("BOT_TOKEN")
 ADMIN_ID=int(os.getenv("ADMIN_ID","0"))
@@ -20,8 +19,15 @@ AUTO_DELETE_MIN=int(os.getenv("AUTO_DELETE_MIN","10"))
 BOT_USERNAME=os.getenv("BOT_USERNAME","@YourBot")
 LOGO_PATH="TIKTOKLOGO.png"
 PROXY_RAW=os.getenv("PROXY_LIST","").strip()
-PROXY_LIST=[p.strip() for p in PROXY_RAW.split(",") if p.strip() and "proxy1" not in p and "proxy2" not in p and "example" not in p]
-WEBAPP_URL=os.getenv("WEBAPP_URL","https://example.koyeb.app/app")
+PROXY_LIST=[p.strip() for p in PROXY_RAW.split(",") if p.strip() and "proxy1" not in p and "proxy2" not in p and "example" not in p.lower()]
+WEBAPP_URL=os.getenv("WEBAPP_URL","").strip()
+
+def is_valid_webapp_url(url):
+    try:
+        p=urlparse(url)
+        return p.scheme in ["https","http"] and p.netloc and "." in p.netloc
+    except: return False
+HAS_WEBAPP=is_valid_webapp_url(WEBAPP_URL)
 
 DB_FILE="max_downloader.db"
 def init_db():
@@ -41,28 +47,6 @@ def db_query(q, params=(), fetch=False):
     conn.commit(); conn.close()
     return data
 
-LANGS={
-    "en": {"welcome":"🚀 <b>MAX DOWNLOADER</b> 🚀\nSend TikTok link ✨\n\n💎 1080p Full Quality\n📦 Large File 1GB Support\n⚡ Real-Time Progress","downloading":"Downloading","queue":"⏳ Queue: You are #{pos} - {wait}s wait","cached":"⚡ From Cache - Instant! 🚀","fav_added":"❤️ Added to favorites","fav_list":"❤️ Your Favorites","history":"📜 Your History","error_private":"🔒 Video is private or deleted","error_region":"🌍 Region blocked - retrying...","error_limit":"⏰ Too many requests - wait {sec}s","broadcast_done":"📢 Broadcast sent to {n} users"},
-    "ar": {"welcome":"🚀 <b>MAX DOWNLOADER</b> 🚀\nأرسل رابط تيك توك ✨","downloading":"جار التحميل","queue":"⏳ قائمة الانتظار: أنت رقم {pos}","cached":"⚡ من الذاكرة - فوري!","fav_added":"❤️ تمت الإضافة للمفضلة","fav_list":"❤️ مفضلتك","history":"📜 سجلك","error_private":"🔒 الفيديو خاص أو محذوف","error_region":"🌍 محظور في منطقتك","error_limit":"⏰ طلبات كثيرة - انتظر {sec}ث","broadcast_done":"📢 تم الإرسال لـ {n}"},
-    "hi": {"welcome":"🚀 <b>MAX DOWNLOADER</b> 🚀\nTikTok लिंक भेजें ✨","downloading":"डाउनलोड हो रहा","queue":"⏳ कतार: आप #{pos} पर हैं","cached":"⚡ कैश से - तुरंत!","fav_added":"❤️ पसंदीदा में जोड़ा","fav_list":"❤️ आपके पसंदीदा","history":"📜 आपका इतिहास","error_private":"🔒 वीडियो प्राइवेट है","error_region":"🌍 क्षेत्र ब्लॉक","error_limit":"⏰ बहुत अनुरोध - {sec}s रुको","broadcast_done":"📢 {n} यूजर्स को भेजा"},
-    "ru": {"welcome":"🚀 <b>MAX DOWNLOADER</b> 🚀\nОтправь ссылку TikTok ✨","downloading":"Загрузка","queue":"⏳ Очередь: Вы #{pos}","cached":"⚡ Из кэша - мгновенно!","fav_added":"❤️ Добавлено в избранное","fav_list":"❤️ Избранное","history":"📜 История","error_private":"🔒 Видео приватное","error_region":"🌍 Блок региона","error_limit":"⏰ Много запросов - жди {sec}с","broadcast_done":"📢 Отправлено {n}"},
-}
-def get_user_lang(user):
-    try:
-        code=(user.language_code or "en")[:2]
-        if code in LANGS: return code
-    except: pass
-    return "en"
-def t(user_id, key, **kwargs):
-    try:
-        conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-        c.execute("SELECT lang FROM users WHERE user_id=?", (user_id,)); r=c.fetchone(); conn.close()
-        lang=r[0] if r and r[0] in LANGS else "en"
-    except: lang="en"
-    txt=LANGS.get(lang, LANGS["en"]).get(key, key)
-    try: return txt.format(**kwargs)
-    except: return txt
-
 STATS_FILE="stats.json"
 URL_STORE={}
 LIVE_DOWNLOADS=0
@@ -71,7 +55,7 @@ DOWNLOAD_SEM=asyncio.Semaphore(3)
 QUEUE_DEQUE=deque()
 USER_REQUESTS=defaultdict(list)
 
-WEBAPP_HTML="""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Max Downloader</title><style>body{font-family:sans-serif;background:#0a0a0f;color:#fff;padding:20px;text-align:center}.card{background:#1a1a2e;border-radius:16px;padding:20px;margin:15px 0;border:1px solid #ff0055}.btn{background:linear-gradient(90deg,#ff0055,#ff5500);color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;display:inline-block;margin:10px}h1{color:#ff0055}</style></head><body><h1>🚀 MAX DOWNLOADER WEB</h1><div class="card"><h3>📊 Live Stats</h3><p id="stats">Loading...</p></div><div class="card"><h3>🎬 How to use</h3><p>Send TikTok link to bot</p><a class="btn" href="https://t.me/YourBot">Open Bot</a></div><script>fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('stats').innerHTML=`Total: ${d.total}<br>Users: ${d.users}<br>Live: ${d.live}`;});</script></body></html>"""
+WEBAPP_HTML="<html><body style='background:#0a0a0f;color:#fff;text-align:center;padding:20px;font-family:sans-serif'><h1 style='color:#ff0055'>🚀 MAX DOWNLOADER</h1><div style='background:#1a1a2e;padding:20px;border-radius:16px'><h3>Live Stats</h3><p id='stats'>Loading...</p></div><script>fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('stats').innerHTML=`Total: ${d.total}<br>Users: ${d.users}<br>Live: ${d.live}`;});</script></body></html>"
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -91,7 +75,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             except:
                 self.send_response(200); self.end_headers(); self.wfile.write(b'{"error":1}')
         else:
-            self.send_response(200); self.end_headers(); self.wfile.write(b"Max Downloader Alive")
+            self.send_response(200); self.end_headers(); self.wfile.write(b"Alive")
     def log_message(self,*a): pass
 threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.getenv("PORT",10000))), HealthHandler).serve_forever(), daemon=True).start()
 
@@ -111,8 +95,7 @@ except: STATS['users']=set()
 
 def progress_bar(pct):
     pct=int(max(0,min(100,pct)))
-    filled=pct//10
-    return f"{'█'*filled}{'░'*(10-filled)} {pct}%"
+    return f"{'█'*(pct//10)}{'░'*(10-pct//10)} {pct}%"
 
 def url_hash(url): return hashlib.md5(url.encode()).hexdigest()[:16]
 
@@ -120,7 +103,7 @@ def beautiful_caption(info, size, elapsed, user_name, cached=False):
     safe_title=html.escape(info['title'][:45])
     safe_author=html.escape(info['author'][:20])
     cache_tag="⚡ CACHED INSTANT 🚀\n" if cached else ""
-    return f"{cache_tag}🚀 <b>MAX DOWNLOADER</b> 🚀\n━━━━━━━━━━━━━━━━━━━━━━━\n👋 Hey <b>{html.escape(user_name)}</b>!\n┌─ 🎬 Video Info ─┐\n│ 👤 @{safe_author}\n│ 📝 {safe_title}\n│ ⏱ {info['duration']}s | 📦 {size:.1f}MB\n│ ⚡ {elapsed:.1f}s | 💎 FULL HD\n└───────────────┘\n📊 Total: {STATS['total']+1} | 👥 {len(STATS['users'])} | 🔴 {LIVE_DOWNLOADS} live\n💎 Max Downloader • No Compression\n⏰ Auto-delete {AUTO_DELETE_MIN}min"
+    return f"{cache_tag}🚀 <b>MAX DOWNLOADER</b> 🚀\n━━━━━━━━━━━━━━━━━━━━━━━\n👋 Hey <b>{html.escape(user_name)}</b>!\n┌─ 🎬 Video Info ─┐\n│ 👤 @{safe_author}\n│ 📝 {safe_title}\n│ ⏱ {info['duration']}s | 📦 {size:.1f}MB\n│ ⚡ {elapsed:.1f}s | 💎 FULL HD\n└───────────────┘\n📊 Total: {STATS['total']+1} | 👥 {len(STATS['users'])} | 🔴 {LIVE_DOWNLOADS} live\n💎 Max Downloader\n⏰ Auto-delete {AUTO_DELETE_MIN}min"
 
 def upload_large_file_real(fp):
     size_mb=os.path.getsize(fp)/(1024*1024)
@@ -129,7 +112,7 @@ def upload_large_file_real(fp):
             with open(fp,'rb') as f:
                 r=requests.post("https://litterbox.catbox.moe/resources/internals/api.php", data={"reqtype":"fileupload","time":"72h"}, files={"fileToUpload":(os.path.basename(fp), f, "video/mp4")}, timeout=600)
             if r.status_code==200 and "http" in r.text: return r.text.strip(), "Litterbox 1GB 72h"
-        except Exception as e: logger.error(f"Litterbox {e}")
+        except: pass
     if size_mb < 200:
         try:
             with open(fp,'rb') as f:
@@ -189,87 +172,88 @@ def make_hook():
     return hook
 
 def download_video_sync_max_realtime(url, tmpdir, watermark=False, proxy=None):
-    import yt_dlp
     progress_data_global["pct"]=0
-    fp=os.path.join(tmpdir, f"{uuid.uuid4().hex}.mp4")
-    ydl_opts={
-        'format':'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl':fp,
-        'merge_output_format':'mp4',
-        'concurrent_fragment_downloads':8,
-        'quiet':True,
-        'no_warnings':True,
-        'noplaylist':True,
-        'nocheckcertificate':True,
-        'progress_hooks':[make_hook()],
-    }
-    if proxy:
-        ydl_opts['proxy']=proxy
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        if not os.path.exists(fp):
-            for f in os.listdir(tmpdir):
-                if f.endswith('.mp4'): fp=os.path.join(tmpdir,f); break
-        if watermark:
-            out=os.path.join(tmpdir, f"wm_{uuid.uuid4().hex}.mp4")
-            fp=add_watermark_fixed(fp, LOGO_PATH, out)
-        return fp
+        r=requests.get(f"https://www.tikwm.com/api/?url={url}&hd=1", headers={'User-Agent':'Mozilla/5.0'}, timeout=20)
+        j=r.json()
+        if j.get('code')==0:
+            d=j['data']
+            vurl=d.get('hdplay') or d.get('play')
+            if vurl:
+                fp2=os.path.join(tmpdir, f"tikwm_{uuid.uuid4().hex}.mp4")
+                with requests.get(vurl, stream=True, timeout=600) as r2:
+                    total=int(r2.headers.get('content-length',0))
+                    downloaded=0
+                    with open(fp2,'wb') as f:
+                        for chunk in r2.iter_content(chunk_size=1024*1024):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded+=len(chunk)
+                                if total>0:
+                                    progress_data_global["pct"]=downloaded/total*100
+                                    progress_data_global["downloaded"]=f"{downloaded/1024/1024:.1f}MB"
+                                    progress_data_global["total"]=f"{total/1024/1024:.1f}MB"
+                if os.path.exists(fp2) and os.path.getsize(fp2)>10000:
+                    if watermark and os.path.exists(LOGO_PATH):
+                        out=os.path.join(tmpdir, f"wm_{uuid.uuid4().hex}.mp4")
+                        fp2=add_watermark_fixed(fp2, LOGO_PATH, out)
+                    return fp2
     except Exception as e:
-        raise e
+        logger.warning(f"tikwm failed {e}")
+
+    import yt_dlp
+    fp=os.path.join(tmpdir, f"{uuid.uuid4().hex}.mp4")
+    ydl_opts={'format':'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best','outtmpl':fp,'merge_output_format':'mp4','concurrent_fragment_downloads':8,'quiet':True,'no_warnings':True,'noplaylist':True,'nocheckcertificate':True,'progress_hooks':[make_hook()]}
+    if proxy: ydl_opts['proxy']=proxy
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+    if not os.path.exists(fp):
+        for f in os.listdir(tmpdir):
+            if f.endswith('.mp4'): fp=os.path.join(tmpdir,f); break
+    if watermark:
+        out=os.path.join(tmpdir, f"wm_{uuid.uuid4().hex}.mp4")
+        fp=add_watermark_fixed(fp, LOGO_PATH, out)
+    return fp
 
 def download_with_retry(url, tmpdir, watermark=False):
     last_err=None
-    # FIXED: Build valid proxy list, skip bad ones
     valid_proxies=[None]
     for p in PROXY_LIST:
-        p=p.strip()
-        if not p: continue
-        if "proxy1" in p or "proxy2" in p or "example" in p:
-            continue
         try:
             parsed=urlparse(p)
-            if parsed.scheme and parsed.netloc:
+            if parsed.scheme in ["http","https","socks5"] and parsed.netloc:
                 valid_proxies.append(p)
-            else:
-                logger.warning(f"Invalid proxy skipped: {p}")
-        except:
-            logger.warning(f"Invalid proxy skipped: {p}")
-
-    logger.info(f"Trying download with {len(valid_proxies)} options (None + {len(valid_proxies)-1} proxies)")
-
+        except: pass
     for attempt in range(3):
         for proxy in valid_proxies:
             try:
-                if proxy: logger.info(f"Attempt {attempt+1} via proxy")
                 return download_video_sync_max_realtime(url, tmpdir, watermark, proxy)
             except Exception as e:
                 last_err=e
                 es=str(e).lower()
-                if "private" in es or "deleted" in es or "not available" in es:
-                    raise Exception("private_video")
-                if "proxy" in es and ("unable" in es or "failed to resolve" in es or "nameResolution" in es):
-                    logger.warning(f"Proxy {proxy} failed, skipping")
-                    continue
-                if "403" in es or "blocked" in es:
-                    continue
+                if "private" in es or "deleted" in es: raise Exception("private_video")
                 time.sleep(0.5)
     raise last_err or Exception("download_failed")
 
 def download_mp3_fixed(url, tmpdir):
     import yt_dlp
     progress_data_global["pct"]=0
+    try:
+        r=requests.get(f"https://www.tikwm.com/api/?url={url}&hd=1", headers={'User-Agent':'Mozilla/5.0'}, timeout=15)
+        j=r.json()
+        if j.get('code')==0:
+            music=j['data'].get('music')
+            if music:
+                fp=os.path.join(tmpdir, f"audio_{uuid.uuid4().hex}.mp3")
+                with requests.get(music, stream=True, timeout=60) as rr:
+                    with open(fp,'wb') as f:
+                        for c in rr.iter_content(1024*1024):
+                            if c: f.write(c)
+                if os.path.exists(fp): return fp
+    except: pass
     outtmpl=os.path.join(tmpdir, f"audio_{uuid.uuid4().hex}.%(ext)s")
-    ydl_opts={
-        'format':'bestaudio/best',
-        'outtmpl':outtmpl,
-        'quiet':True,
-        'no_warnings':True,
-        'progress_hooks':[make_hook()],
-        'postprocessors':[{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'192'}],
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    ydl_opts={'format':'bestaudio/best','outtmpl':outtmpl,'quiet':True,'no_warnings':True,'progress_hooks':[make_hook()],'postprocessors':[{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'192'}]}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
     for f in os.listdir(tmpdir):
         if f.endswith('.mp3'): return os.path.join(tmpdir,f)
     raise FileNotFoundError("MP3 failed")
@@ -281,21 +265,17 @@ async def delete_after(context: ContextTypes.DEFAULT_TYPE):
 def check_antispam(user_id):
     now=time.time()
     USER_REQUESTS[user_id]=[t for t in USER_REQUESTS[user_id] if now-t<60]
-    if len(USER_REQUESTS[user_id])>=5:
-        return False, 60-int(now-USER_REQUESTS[user_id][0])
+    if len(USER_REQUESTS[user_id])>=5: return False, 60-int(now-USER_REQUESTS[user_id][0])
     USER_REQUESTS[user_id].append(now)
     return True, 0
 
 async def process_tiktok(update:Update, context, url:str):
     global LIVE_DOWNLOADS, STATS
     user_id=update.effective_user.id
-    try:
-        lang=get_user_lang(update.effective_user)
-        db_query("INSERT OR IGNORE INTO users (user_id, lang, joined_at) VALUES (?,?,?)", (user_id, lang, datetime.now().isoformat()))
+    try: db_query("INSERT OR IGNORE INTO users (user_id, lang, joined_at) VALUES (?,?,?)", (user_id, "en", datetime.now().isoformat()))
     except: pass
     ok, wait_sec=check_antispam(user_id)
-    if not ok:
-        return await update.message.reply_text(t(user_id, "error_limit", sec=wait_sec))
+    if not ok: return await update.message.reply_text(f"⏰ Too many requests - wait {wait_sec}s")
     h=url_hash(url)
     try:
         conn=sqlite3.connect(DB_FILE); c=conn.cursor()
@@ -312,15 +292,12 @@ async def process_tiktok(update:Update, context, url:str):
                 context.job_queue.run_once(delete_after, when=AUTO_DELETE_MIN*60, data={'chat_id':sent.chat_id,'msg_id':sent.message_id})
                 return
             except: pass
-    except Exception as e: logger.error(f"Cache {e}")
-
+    except: pass
     if DOWNLOAD_SEM.locked():
         pos=len(QUEUE_DEQUE)+1
         QUEUE_DEQUE.append(user_id)
-        q_msg=await update.message.reply_text(t(user_id, "queue", pos=pos, wait=pos*15))
-    else:
-        q_msg=None
-
+        q_msg=await update.message.reply_text(f"⏳ Queue: You are #{pos} - {pos*15}s wait")
+    else: q_msg=None
     async with DOWNLOAD_SEM:
         try:
             if q_msg:
@@ -332,7 +309,7 @@ async def process_tiktok(update:Update, context, url:str):
         LIVE_DOWNLOADS+=1
         t0=datetime.now()
         tmpdir=tempfile.mkdtemp()
-        m=await update.message.reply_text("🚀 <b>MAX DOWNLOADER</b>\n"+progress_bar(0), parse_mode=ParseMode.HTML)
+        m=await update.message.reply_text("🚀 MAX DOWNLOADER\n"+progress_bar(0))
         progress_data_global["pct"]=0
         stop_updating=False
         try:
@@ -341,14 +318,9 @@ async def process_tiktok(update:Update, context, url:str):
                 last_pct=-1
                 while not stop_updating:
                     pct=progress_data_global.get("pct",0)
-                    speed=progress_data_global.get("speed","")
-                    eta=progress_data_global.get("eta","")
-                    down=progress_data_global.get("downloaded","")
-                    total=progress_data_global.get("total","")
                     if abs(pct-last_pct)>=1 or pct==0:
-                        bar=progress_bar(pct)
                         try:
-                            await m.edit_text(f"🚀 <b>MAX DOWNLOADER</b> 🚀\n━━━━━━━━━━━━━━━\n🎬 {info['duration']}s video\n{bar}\n📦 {down} / {total}\n⚡ {speed} | ⏰ {eta}\n🔴 Live: {LIVE_DOWNLOADS}", parse_mode=ParseMode.HTML)
+                            await m.edit_text(f"🚀 MAX DOWNLOADER\n{progress_bar(pct)}\n📦 {progress_data_global.get('downloaded','')} / {progress_data_global.get('total','')}\n⚡ {progress_data_global.get('speed','')} | ⏰ {progress_data_global.get('eta','')}\n🔴 Live: {LIVE_DOWNLOADS}")
                             last_pct=pct
                         except: pass
                     await asyncio.sleep(0.8)
@@ -365,25 +337,21 @@ async def process_tiktok(update:Update, context, url:str):
             except: pass
             save_stats({"total":STATS['total'],"total_size":STATS['total_size'],"users":list(STATS['users']) if isinstance(STATS['users'], set) else STATS['users']})
             short_id=str(uuid.uuid4())[:8]; URL_STORE[short_id]=info
-            user_name=update.effective_user.first_name or "Friend"
-            caption=beautiful_caption(info, size_mb, elapsed, user_name)
-            await m.edit_text(f"🚀 <b>MAX DOWNLOADER</b>\n{progress_bar(100)}\n✅ Done! Uploading...", parse_mode=ParseMode.HTML)
+            caption=beautiful_caption(info, size_mb, elapsed, update.effective_user.first_name or "Friend")
+            try: await m.edit_text(f"🚀 MAX DOWNLOADER\n{progress_bar(100)}\n✅ Done! Uploading...")
+            except: pass
             if size_mb > MAX_SIZE_MB:
-                await m.edit_text(f"📦 {size_mb:.1f}MB Large - Uploading to cloud... 🚀", parse_mode=ParseMode.HTML)
+                try: await m.edit_text(f"📦 {size_mb:.1f}MB Large - Uploading to cloud...")
+                except: pass
                 link, service = await asyncio.to_thread(upload_large_file_real, path)
                 if link:
-                    kb=InlineKeyboardMarkup([[InlineKeyboardButton(f"📦 Catbox Full Quality • {size_mb:.1f}MB 🚀", url=link)], [InlineKeyboardButton(f"❤️ Favorite", callback_data=f"fav_{short_id}")]] )
-                    sent=await update.message.reply_text(caption+f"\n\n☁️ <b>{service}</b>\n🔗 <code>{html.escape(link)}</code>", reply_markup=kb, parse_mode=ParseMode.HTML)
+                    kb=InlineKeyboardMarkup([[InlineKeyboardButton(f"📦 Catbox Full Quality • {size_mb:.1f}MB", url=link)]])
+                    sent=await update.message.reply_text(caption+f"\n\n☁️ {service}\n🔗 {link}", reply_markup=kb, parse_mode=ParseMode.HTML)
                     context.job_queue.run_once(delete_after, when=AUTO_DELETE_MIN*60, data={'chat_id':sent.chat_id,'msg_id':sent.message_id})
                 try: await m.delete()
                 except: pass
                 return
-            kb=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎬 HD 1080p 💎", callback_data=f"hd_{short_id}")],
-                [InlineKeyboardButton("📱 Original", callback_data=f"orig_{short_id}"), InlineKeyboardButton("💧 Watermark ✨", callback_data=f"wm_{short_id}")],
-                [InlineKeyboardButton("🎵 MP3 Audio 🎧", callback_data=f"mp3_{short_id}"), InlineKeyboardButton("❤️ Favorite", callback_data=f"fav_{short_id}")],
-                [InlineKeyboardButton("🗑️ Delete", callback_data=f"del_{short_id}")],
-            ])
+            kb=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 HD 1080p 💎", callback_data=f"hd_{short_id}")],[InlineKeyboardButton("📱 Original", callback_data=f"orig_{short_id}"), InlineKeyboardButton("💧 Watermark ✨", callback_data=f"wm_{short_id}")],[InlineKeyboardButton("🎵 MP3 Audio 🎧", callback_data=f"mp3_{short_id}"), InlineKeyboardButton("❤️ Favorite", callback_data=f"fav_{short_id}")],[InlineKeyboardButton("🗑️ Delete", callback_data=f"del_{short_id}")]])
             thumb_file = open(info['thumb'],'rb') if info['thumb'] and os.path.exists(info['thumb']) else None
             with open(path,'rb') as vf:
                 sent=await update.message.reply_video(video=vf, thumbnail=thumb_file, caption=caption, supports_streaming=True, reply_markup=kb, parse_mode=ParseMode.HTML, read_timeout=180, write_timeout=180)
@@ -392,22 +360,14 @@ async def process_tiktok(update:Update, context, url:str):
                 file_id=sent.video.file_id
                 db_query("INSERT OR REPLACE INTO cache (url_hash, url, file_id, size, title, author, created_at) VALUES (?,?,?,?,?,?,?)", (h, url, file_id, size_mb, info['title'], info['author'], datetime.now().isoformat()))
                 db_query("INSERT INTO history (user_id, url, title, size, created_at) VALUES (?,?,?,?,?)", (user_id, url, info['title'], size_mb, datetime.now().isoformat()))
-                db_query("UPDATE users SET total_downloads=total_downloads+1 WHERE user_id=?", (user_id,))
-            except Exception as e: logger.error(f"DB save {e}")
+            except: pass
             try: await m.delete()
             except: pass
             context.job_queue.run_once(delete_after, when=AUTO_DELETE_MIN*60, data={'chat_id':sent.chat_id,'msg_id':sent.message_id})
         except Exception as e:
             stop_updating=True
-            err=str(e).lower()
             logger.error(f"Process {e}", exc_info=True)
-            if "private_video" in err or "private" in err or "deleted" in err:
-                msg=t(user_id, "error_private")
-            elif "403" in err or "blocked" in err or "region" in err:
-                msg=t(user_id, "error_region")
-            else:
-                msg=f"❌ Error: {html.escape(str(e)[:200])}\n\nTry again"
-            try: await m.edit_text(msg, parse_mode=ParseMode.HTML)
+            try: await m.edit_text(f"❌ {str(e)[:200]}\nTry again")
             except: pass
         finally:
             LIVE_DOWNLOADS-=1
@@ -427,7 +387,7 @@ async def button_handler(update:Update, context:ContextTypes.DEFAULT_TYPE):
         if info:
             try:
                 db_query("INSERT OR IGNORE INTO favorites (user_id, url, title, created_at) VALUES (?,?,?,?)", (user_id, info['url'], info['title'], datetime.now().isoformat()))
-                await q.message.reply_text(t(user_id, "fav_added"))
+                await q.message.reply_text("❤️ Added to favorites")
             except: await q.message.reply_text("❤️ Already in favorites")
         return
     try:
@@ -435,96 +395,92 @@ async def button_handler(update:Update, context:ContextTypes.DEFAULT_TYPE):
         info=URL_STORE.get(sid)
         if not info: return await q.message.reply_text("Expired")
         tmpdir=tempfile.mkdtemp()
-        m=await q.message.reply_text(f"🚀 <b>MAX DOWNLOADER</b> {action.upper()}\n"+progress_bar(0), parse_mode=ParseMode.HTML)
+        m=await q.message.reply_text(f"🚀 MAX DOWNLOADER {action.upper()}\n"+progress_bar(0))
         progress_data_global["pct"]=0
         stop_updating=False
-        async def realtime_updater_btn():
-            last_pct=-1
+        async def updater():
+            last=-1
             while not stop_updating:
                 pct=progress_data_global.get("pct",0)
-                if abs(pct-last_pct)>=1:
-                    try: await m.edit_text(f"🚀 <b>MAX DOWNLOADER</b> {action.upper()}\n{progress_bar(pct)}\n⚡ {progress_data_global.get('speed','')}", parse_mode=ParseMode.HTML)
+                if abs(pct-last)>=1:
+                    try: await m.edit_text(f"🚀 MAX DOWNLOADER {action.upper()}\n{progress_bar(pct)}")
                     except: pass
-                    last_pct=pct
+                    last=pct
                 await asyncio.sleep(0.8)
-        updater_task=asyncio.create_task(realtime_updater_btn())
+        task=asyncio.create_task(updater())
         try:
             if action=="mp3":
                 await q.message.chat.send_action(ChatAction.UPLOAD_VOICE)
                 mp3_path=await asyncio.to_thread(download_mp3_fixed, info['url'], tmpdir)
                 stop_updating=True
-                try: await updater_task
+                try: await task
                 except: pass
-                await m.edit_text("🎵 Uploading MP3...\n"+progress_bar(95), parse_mode=ParseMode.HTML)
-                with open(mp3_path,'rb') as af:
-                    await q.message.reply_audio(audio=af, title=info['title'][:60], performer="Max Downloader")
+                await m.edit_text("🎵 Uploading MP3...\n"+progress_bar(95))
+                with open(mp3_path,'rb') as af: await q.message.reply_audio(audio=af, title=info['title'][:60], performer="Max Downloader")
                 await m.delete()
                 return
             await q.message.chat.send_action(ChatAction.UPLOAD_VIDEO)
             is_wm=(action=="wm")
             path=await asyncio.to_thread(download_with_retry, info['url'], tmpdir, is_wm)
             stop_updating=True
-            try: await updater_task
+            try: await task
             except: pass
             size_mb=os.path.getsize(path)/(1024*1024)
             if size_mb>MAX_SIZE_MB:
-                await m.edit_text(f"📦 {size_mb:.1f}MB Uploading...\n"+progress_bar(80), parse_mode=ParseMode.HTML)
+                await m.edit_text(f"📦 {size_mb:.1f}MB Uploading...\n"+progress_bar(80))
                 link, service=await asyncio.to_thread(upload_large_file_real, path)
                 if link:
-                    kb=InlineKeyboardMarkup([[InlineKeyboardButton(f"📦 Catbox Full Quality • {size_mb:.1f}MB 🚀", url=link)]])
+                    kb=InlineKeyboardMarkup([[InlineKeyboardButton(f"📦 Catbox Full Quality • {size_mb:.1f}MB", url=link)]])
                     await q.message.reply_text(f"📦 FULL {size_mb:.1f}MB • {service}\n{link}", reply_markup=kb)
                     await m.delete()
                     return
-            await m.edit_text("⬆️ Uploading...\n"+progress_bar(95), parse_mode=ParseMode.HTML)
+            await m.edit_text("⬆️ Uploading...\n"+progress_bar(95))
             tag="💧 Watermark" if is_wm else "💎 FULL HD"
-            with open(path,'rb') as vf:
-                await q.message.reply_video(video=vf, caption=f"🚀 <b>MAX DOWNLOADER</b> • {tag} • {size_mb:.1f}MB", supports_streaming=True, parse_mode=ParseMode.HTML)
+            with open(path,'rb') as vf: await q.message.reply_video(video=vf, caption=f"🚀 MAX DOWNLOADER • {tag} • {size_mb:.1f}MB", supports_streaming=True)
             await m.delete()
         finally:
             stop_updating=True
             import shutil; shutil.rmtree(tmpdir, ignore_errors=True)
     except Exception as e:
         logger.error(f"Button {e}", exc_info=True)
-        try: await q.message.reply_text(f"❌ {html.escape(str(e)[:300])}", parse_mode=ParseMode.HTML)
+        try: await q.message.reply_text(f"❌ {str(e)[:300]}")
         except: pass
 
 async def start_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    user_id=update.effective_user.id
-    lang=get_user_lang(update.effective_user)
-    try: db_query("INSERT OR IGNORE INTO users (user_id, lang, joined_at) VALUES (?,?,?)", (user_id, lang, datetime.now().isoformat()))
+    try: db_query("INSERT OR IGNORE INTO users (user_id, lang, joined_at) VALUES (?,?,?)", (update.effective_user.id, "en", datetime.now().isoformat()))
     except: pass
     total_users=len(STATS['users']) if isinstance(STATS['users'], set) else 0
-    webapp_btn=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Web App", web_app=WebAppInfo(url=WEBAPP_URL))],[InlineKeyboardButton("📜 History", callback_data="show_history"), InlineKeyboardButton("❤️ Favorites", callback_data="show_fav")],[InlineKeyboardButton("📊 Stats", callback_data="show_stats_btn")]])
-    await update.message.reply_text(t(user_id, "welcome", lang=lang)+f"\n━━━━━━━━━━━━━━━\n📊 {STATS['total']} | 👥 {total_users} | 🔴 {LIVE_DOWNLOADS} live\n💾 Cache: instant repeat\n📦 1GB Large File ✅\n⚡ Real-Time 0-100%", reply_markup=webapp_btn, parse_mode=ParseMode.HTML)
-
-async def history_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    user_id=update.effective_user.id
-    rows=db_query("SELECT title, created_at FROM history WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,), fetch=True)
-    if not rows: return await update.message.reply_text("📜 No history yet")
-    txt=f"📜 <b>{t(user_id,'history')}</b> (last 10):\n━━━━━━━━━━━━━━━\n"
-    for r in rows: txt+=f"• {html.escape(r[0][:30])} - {r[1][:10]}\n"
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
-
-async def fav_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    user_id=update.effective_user.id
-    rows=db_query("SELECT title, url FROM favorites WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,), fetch=True)
-    if not rows: return await update.message.reply_text("❤️ No favorites yet")
-    txt=f"❤️ <b>{t(user_id,'fav_list')}</b>:\n━━━━━━━━━━━━━━━\n"
-    for title, url in rows: txt+=f"• {html.escape(title[:30])}\n<code>{html.escape(url[:40])}</code>\n\n"
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
+    if HAS_WEBAPP:
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Web App", web_app=WebAppInfo(url=WEBAPP_URL))],[InlineKeyboardButton("📜 History", callback_data="show_history"), InlineKeyboardButton("❤️ Favorites", callback_data="show_fav")]])
+    else:
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton("📜 History", callback_data="show_history"), InlineKeyboardButton("❤️ Favorites", callback_data="show_fav")],[InlineKeyboardButton("📊 Stats", callback_data="show_stats_btn")]])
+    await update.message.reply_text(f"🚀 <b>MAX DOWNLOADER</b> 🚀\n━━━━━━━━━━━━━━━\n💎 1080p Full Quality\n📦 Large File 1GB ✅\n💧 Watermark {LOGO_PATH}\n🎵 MP3 Fixed\n⚡ Real-Time 0-100%\n━━━━━━━━━━━━━━━\n📊 {STATS['total']} | 👥 {total_users} | 🔴 {LIVE_DOWNLOADS} live\n💾 Cache: instant\nSend TikTok link ✨", reply_markup=kb, parse_mode=ParseMode.HTML)
 
 async def admin_panel(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID and update.effective_user.id!=ADMIN_ID: return await update.message.reply_text("Not admin")
     rows=db_query("SELECT COUNT(*) FROM cache", fetch=True)
     cache_count=rows[0][0] if rows else 0
-    await update.message.reply_text(f"🔐 <b>MAX DOWNLOADER ADMIN PRO</b>\nTotal: {STATS['total']}\nCache: {cache_count}\nQueue: {len(QUEUE_DEQUE)}\nLive: {LIVE_DOWNLOADS}/3\nProxies: {len(PROXY_LIST)} valid\nDB: SQLite\n\n/broadcast <msg>\n/stats\n/cache_clear", parse_mode=ParseMode.HTML)
+    text=f"🔐 <b>MAX DOWNLOADER ADMIN PRO</b>\nTotal: {STATS['total']}\nCache: {cache_count}\nQueue: {len(QUEUE_DEQUE)}\nLive: {LIVE_DOWNLOADS}/3\nProxies: {len(PROXY_LIST)} valid\nDB: SQLite\n\n/broadcast message_here\n/stats\n/cache_clear"
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def stats_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     rows=db_query("SELECT COUNT(*) FROM users", fetch=True)
     users=rows[0][0] if rows else len(STATS['users'])
     rows2=db_query("SELECT COUNT(*) FROM cache", fetch=True)
     cache=rows2[0][0] if rows2 else 0
-    await update.message.reply_text(f"📊 <b>MAX DOWNLOADER STATS PRO</b>\nTotal: {STATS['total']}\nUsers: {users}\nCache: {cache}\nLive: {LIVE_DOWNLOADS}/3\nServed: {STATS['total_size']/1024:.2f} GB\nProxies: {len(PROXY_LIST)}", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"📊 <b>MAX DOWNLOADER STATS PRO</b>\nTotal: {STATS['total']}\nUsers: {users}\nCache: {cache}\nLive: {LIVE_DOWNLOADS}/3\nServed: {STATS['total_size']/1024:.2f} GB", parse_mode=ParseMode.HTML)
+
+async def history_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    rows=db_query("SELECT title FROM history WHERE user_id=? ORDER BY id DESC LIMIT 10", (update.effective_user.id,), fetch=True)
+    if not rows: return await update.message.reply_text("📜 No history yet")
+    txt="📜 <b>History</b>:\n"+"\n".join([f"• {html.escape(r[0][:30])}" for r in rows])
+    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
+
+async def fav_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    rows=db_query("SELECT title FROM favorites WHERE user_id=? ORDER BY id DESC LIMIT 10", (update.effective_user.id,), fetch=True)
+    if not rows: return await update.message.reply_text("❤️ No favorites yet")
+    txt="❤️ <b>Favorites</b>:\n"+"\n".join([f"• {html.escape(r[0][:30])}" for r in rows])
+    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
 async def broadcast_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID and update.effective_user.id!=ADMIN_ID: return
@@ -538,7 +494,7 @@ async def broadcast_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
             sent+=1
             await asyncio.sleep(0.05)
         except: pass
-    await update.message.reply_text(t(update.effective_user.id, "broadcast_done", n=sent))
+    await update.message.reply_text(f"📢 Broadcast sent to {sent} users")
 
 async def cache_clear_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID and update.effective_user.id!=ADMIN_ID: return
@@ -562,27 +518,15 @@ async def handle(update:Update, context:ContextTypes.DEFAULT_TYPE):
     for u in urls[:3]: await process_tiktok(update, context, u)
 
 async def extra_callback(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    q=update.callback_query
-    if q.data=="show_history":
-        await q.answer()
-        user_id=q.from_user.id
-        rows=db_query("SELECT title FROM history WHERE user_id=? ORDER BY id DESC LIMIT 5", (user_id,), fetch=True)
-        txt="📜 History:\n"+"\n".join([f"• {r[0][:30]}" for r in rows]) if rows else "No history"
-        await q.message.reply_text(txt)
-    elif q.data=="show_fav":
-        await q.answer()
-        user_id=q.from_user.id
-        rows=db_query("SELECT title FROM favorites WHERE user_id=? ORDER BY id DESC LIMIT 5", (user_id,), fetch=True)
-        txt="❤️ Favorites:\n"+"\n".join([f"• {r[0][:30]}" for r in rows]) if rows else "No fav"
-        await q.message.reply_text(txt)
-    elif q.data=="show_stats_btn":
-        await q.answer()
-        await stats_cmd(update, context)
-    else:
-        await button_handler(update, context)
+    if update.callback_query.data=="show_history": await history_cmd(update, context)
+    elif update.callback_query.data=="show_fav": await fav_cmd(update, context)
+    elif update.callback_query.data=="show_stats_btn": await stats_cmd(update, context)
+    else: await button_handler(update, context)
 
 def main():
-    try: requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=10)
+    try:
+        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=10)
+        time.sleep(2)
     except: pass
     app=ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
@@ -595,8 +539,8 @@ def main():
     app.add_handler(CallbackQueryHandler(extra_callback))
     app.add_handler(InlineQueryHandler(inline_mode))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    logger.info(f"MAX DOWNLOADER PRO FIXED - Proxies: {len(PROXY_LIST)} valid - {PROXY_LIST}")
-    app.run_polling(drop_pending_updates=True)
+    logger.info(f"MAX DOWNLOADER FINAL - Proxies: {len(PROXY_LIST)} WebApp: {HAS_WEBAPP}")
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__=="__main__":
     main()

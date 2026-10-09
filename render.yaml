@@ -1,0 +1,20 @@
+services:
+    - type: web
+    name: tiktok-ultra-bot
+    env: docker
+    plan: free
+    dockerfilePath:./Dockerfile
+    healthCheckPath: /
+    envVars:
+            - key: BOT_TOKEN
+        sync: false
+            - key: ADMIN_IDS
+        sync: false
+            - key: AUTO_DELETE_MINUTES
+        value: 2
+            - key: MAX_TELEGRAM_SIZE_MB
+        value: 50
+            - key: CATBOX_ENABLED
+        value: True
+            - key: BOT_USERNAME
+        sync: false

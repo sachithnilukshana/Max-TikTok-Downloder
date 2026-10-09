@@ -1,9 +1,9 @@
 import os, re, json, uuid, asyncio, tempfile, requests, threading, subprocess, logging, html, time, hashlib, sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict, deque
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent, WebAppInfo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, ContextTypes, filters
 from telegram.constants import ChatAction, ParseMode
@@ -19,20 +19,18 @@ MAX_SIZE_MB=int(os.getenv("MAX_TELEGRAM_SIZE_MB","50"))
 AUTO_DELETE_MIN=int(os.getenv("AUTO_DELETE_MIN","10"))
 BOT_USERNAME=os.getenv("BOT_USERNAME","@YourBot")
 LOGO_PATH="TIKTOKLOGO.png"
-PROXY_LIST=[p.strip() for p in os.getenv("PROXY_LIST","").split(",") if p.strip()]
-CHANNEL_USERNAME=os.getenv("CHANNEL_USERNAME","") # For force sub, e.g. @mychannel
-WEBAPP_URL=os.getenv("WEBAPP_URL",f"https://{os.getenv('KOYEB_APP_NAME','')}.koyeb.app/app")
+PROXY_RAW=os.getenv("PROXY_LIST","").strip()
+PROXY_LIST=[p.strip() for p in PROXY_RAW.split(",") if p.strip() and "proxy1" not in p and "proxy2" not in p and "example" not in p]
+WEBAPP_URL=os.getenv("WEBAPP_URL","https://example.koyeb.app/app")
 
-# ===== DATABASE (Feature #4) =====
 DB_FILE="max_downloader.db"
 def init_db():
     conn=sqlite3.connect(DB_FILE)
     c=conn.cursor()
     c.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, lang TEXT, joined_at TEXT, total_downloads INTEGER DEFAULT 0)")
-    c.execute("CREATE TABLE IF NOT EXISTS cache (url_hash TEXT PRIMARY KEY, url TEXT, file_id TEXT, file_unique_id TEXT, size REAL, title TEXT, author TEXT, created_at TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS cache (url_hash TEXT PRIMARY KEY, url TEXT, file_id TEXT, size REAL, title TEXT, author TEXT, created_at TEXT)")
     c.execute("CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, url TEXT, title TEXT, size REAL, created_at TEXT)")
     c.execute("CREATE TABLE IF NOT EXISTS favorites (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, url TEXT, title TEXT, created_at TEXT, UNIQUE(user_id, url))")
-    c.execute("CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value TEXT)")
     conn.commit(); conn.close()
 init_db()
 def db_query(q, params=(), fetch=False):
@@ -43,9 +41,8 @@ def db_query(q, params=(), fetch=False):
     conn.commit(); conn.close()
     return data
 
-# ===== FEATURE #10 LANGUAGE =====
 LANGS={
-    "en": {"welcome":"🚀 <b>MAX DOWNLOADER</b> 🚀\nSend TikTok link ✨\n\n💎 1080p Full Quality\n📦 Large File 1GB Support\n⚡ Real-Time Progress\n🌐 Auto language: {lang}","downloading":"Downloading","queue":"⏳ Queue: You are #{pos} - {wait}s wait","cached":"⚡ From Cache - Instant! 🚀","fav_added":"❤️ Added to favorites","fav_list":"❤️ Your Favorites","history":"📜 Your History","error_private":"🔒 Video is private or deleted","error_region":"🌍 Region blocked - retrying with proxy...","error_limit":"⏰ Too many requests - wait {sec}s","broadcast_done":"📢 Broadcast sent to {n} users"},
+    "en": {"welcome":"🚀 <b>MAX DOWNLOADER</b> 🚀\nSend TikTok link ✨\n\n💎 1080p Full Quality\n📦 Large File 1GB Support\n⚡ Real-Time Progress","downloading":"Downloading","queue":"⏳ Queue: You are #{pos} - {wait}s wait","cached":"⚡ From Cache - Instant! 🚀","fav_added":"❤️ Added to favorites","fav_list":"❤️ Your Favorites","history":"📜 Your History","error_private":"🔒 Video is private or deleted","error_region":"🌍 Region blocked - retrying...","error_limit":"⏰ Too many requests - wait {sec}s","broadcast_done":"📢 Broadcast sent to {n} users"},
     "ar": {"welcome":"🚀 <b>MAX DOWNLOADER</b> 🚀\nأرسل رابط تيك توك ✨","downloading":"جار التحميل","queue":"⏳ قائمة الانتظار: أنت رقم {pos}","cached":"⚡ من الذاكرة - فوري!","fav_added":"❤️ تمت الإضافة للمفضلة","fav_list":"❤️ مفضلتك","history":"📜 سجلك","error_private":"🔒 الفيديو خاص أو محذوف","error_region":"🌍 محظور في منطقتك","error_limit":"⏰ طلبات كثيرة - انتظر {sec}ث","broadcast_done":"📢 تم الإرسال لـ {n}"},
     "hi": {"welcome":"🚀 <b>MAX DOWNLOADER</b> 🚀\nTikTok लिंक भेजें ✨","downloading":"डाउनलोड हो रहा","queue":"⏳ कतार: आप #{pos} पर हैं","cached":"⚡ कैश से - तुरंत!","fav_added":"❤️ पसंदीदा में जोड़ा","fav_list":"❤️ आपके पसंदीदा","history":"📜 आपका इतिहास","error_private":"🔒 वीडियो प्राइवेट है","error_region":"🌍 क्षेत्र ब्लॉक","error_limit":"⏰ बहुत अनुरोध - {sec}s रुको","broadcast_done":"📢 {n} यूजर्स को भेजा"},
     "ru": {"welcome":"🚀 <b>MAX DOWNLOADER</b> 🚀\nОтправь ссылку TikTok ✨","downloading":"Загрузка","queue":"⏳ Очередь: Вы #{pos}","cached":"⚡ Из кэша - мгновенно!","fav_added":"❤️ Добавлено в избранное","fav_list":"❤️ Избранное","history":"📜 История","error_private":"🔒 Видео приватное","error_region":"🌍 Блок региона","error_limit":"⏰ Много запросов - жди {sec}с","broadcast_done":"📢 Отправлено {n}"},
@@ -66,43 +63,22 @@ def t(user_id, key, **kwargs):
     try: return txt.format(**kwargs)
     except: return txt
 
-# ===== GLOBAL STATE =====
 STATS_FILE="stats.json"
 URL_STORE={}
 LIVE_DOWNLOADS=0
 progress_data_global={"pct":0,"speed":"","eta":"","downloaded":"","total":""}
-DOWNLOAD_SEM=asyncio.Semaphore(3) # Feature #2 Queue limit 3 parallel
+DOWNLOAD_SEM=asyncio.Semaphore(3)
 QUEUE_DEQUE=deque()
-USER_REQUESTS=defaultdict(list) # anti-spam
-CACHE_MEMORY={} # url_hash -> file_id
+USER_REQUESTS=defaultdict(list)
 
-# ===== WEB APP (Feature #11) =====
-WEBAPP_HTML="""
-<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Max Downloader</title><style>
-body{font-family:sans-serif;background:#0a0a0f;color:#fff;padding:20px;text-align:center}
-.card{background:#1a1a2e;border-radius:16px;padding:20px;margin:15px 0;border:1px solid #ff0055}
-.btn{background:linear-gradient(90deg,#ff0055,#ff5500);color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;display:inline-block;margin:10px}
-h1{color:#ff0055}
-</style></head><body>
-<h1>🚀 MAX DOWNLOADER WEB</h1>
-<div class="card"><h3>📊 Live Stats</h3><p id="stats">Loading...</p></div>
-<div class="card"><h3>🎬 How to use</h3><p>Send TikTok link to bot<br>@YourBot</p><a class="btn" href="https://t.me/YourBot">Open Bot</a></div>
-<div class="card"><h3>❤️ Favorites & History</h3><p>Access in bot: /favorites /history</p></div>
-<script>
-fetch('/api/stats').then(r=>r.json()).then(d=>{
- document.getElementById('stats').innerHTML=`Total: ${d.total}<br>Users: ${d.users}<br>Live: ${d.live}`;
-});
-</script></body></html>
-"""
+WEBAPP_HTML="""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Max Downloader</title><style>body{font-family:sans-serif;background:#0a0a0f;color:#fff;padding:20px;text-align:center}.card{background:#1a1a2e;border-radius:16px;padding:20px;margin:15px 0;border:1px solid #ff0055}.btn{background:linear-gradient(90deg,#ff0055,#ff5500);color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;display:inline-block;margin:10px}h1{color:#ff0055}</style></head><body><h1>🚀 MAX DOWNLOADER WEB</h1><div class="card"><h3>📊 Live Stats</h3><p id="stats">Loading...</p></div><div class="card"><h3>🎬 How to use</h3><p>Send TikTok link to bot</p><a class="btn" href="https://t.me/YourBot">Open Bot</a></div><script>fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('stats').innerHTML=`Total: ${d.total}<br>Users: ${d.users}<br>Live: ${d.live}`;});</script></body></html>"""
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        parsed=urlparse(self.path)
-        if parsed.path=="/app" or parsed.path=="/":
+        if self.path in ["/app","/"]:
             self.send_response(200); self.send_header("Content-type","text/html"); self.end_headers()
             self.wfile.write(WEBAPP_HTML.encode())
-        elif parsed.path=="/api/stats":
+        elif self.path=="/api/stats":
             try:
                 conn=sqlite3.connect(DB_FILE); c=conn.cursor()
                 c.execute("SELECT COUNT(*) FROM users"); users=c.fetchone()[0]
@@ -112,14 +88,13 @@ class HealthHandler(BaseHTTPRequestHandler):
                 data=js.dumps({"total":cache,"users":users,"live":LIVE_DOWNLOADS})
                 self.send_response(200); self.send_header("Content-type","application/json"); self.end_headers()
                 self.wfile.write(data.encode())
-            except Exception as e:
+            except:
                 self.send_response(200); self.end_headers(); self.wfile.write(b'{"error":1}')
         else:
             self.send_response(200); self.end_headers(); self.wfile.write(b"Max Downloader Alive")
     def log_message(self,*a): pass
 threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.getenv("PORT",10000))), HealthHandler).serve_forever(), daemon=True).start()
 
-# ===== UTILS =====
 def load_stats():
     try:
         if os.path.exists(STATS_FILE):
@@ -139,27 +114,13 @@ def progress_bar(pct):
     filled=pct//10
     return f"{'█'*filled}{'░'*(10-filled)} {pct}%"
 
-def url_hash(url):
-    return hashlib.md5(url.encode()).hexdigest()[:16]
+def url_hash(url): return hashlib.md5(url.encode()).hexdigest()[:16]
 
 def beautiful_caption(info, size, elapsed, user_name, cached=False):
     safe_title=html.escape(info['title'][:45])
     safe_author=html.escape(info['author'][:20])
     cache_tag="⚡ CACHED INSTANT 🚀\n" if cached else ""
-    return (
-        f"{cache_tag}🚀 <b>MAX DOWNLOADER</b> 🚀\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👋 Hey <b>{html.escape(user_name)}</b>!\n"
-        f"┌─ 🎬 Video Info ─┐\n"
-        f"│ 👤 @{safe_author}\n"
-        f"│ 📝 {safe_title}\n"
-        f"│ ⏱ {info['duration']}s | 📦 {size:.1f}MB\n"
-        f"│ ⚡ {elapsed:.1f}s | 💎 FULL HD\n"
-        f"└───────────────┘\n"
-        f"📊 Total: {STATS['total']+1} | 👥 {len(STATS['users'])} | 🔴 {LIVE_DOWNLOADS} live\n"
-        f"💎 Max Downloader • No Compression\n"
-        f"⏰ Auto-delete {AUTO_DELETE_MIN}min"
-    )
+    return f"{cache_tag}🚀 <b>MAX DOWNLOADER</b> 🚀\n━━━━━━━━━━━━━━━━━━━━━━━\n👋 Hey <b>{html.escape(user_name)}</b>!\n┌─ 🎬 Video Info ─┐\n│ 👤 @{safe_author}\n│ 📝 {safe_title}\n│ ⏱ {info['duration']}s | 📦 {size:.1f}MB\n│ ⚡ {elapsed:.1f}s | 💎 FULL HD\n└───────────────┘\n📊 Total: {STATS['total']+1} | 👥 {len(STATS['users'])} | 🔴 {LIVE_DOWNLOADS} live\n💎 Max Downloader • No Compression\n⏰ Auto-delete {AUTO_DELETE_MIN}min"
 
 def upload_large_file_real(fp):
     size_mb=os.path.getsize(fp)/(1024*1024)
@@ -242,7 +203,8 @@ def download_video_sync_max_realtime(url, tmpdir, watermark=False, proxy=None):
         'nocheckcertificate':True,
         'progress_hooks':[make_hook()],
     }
-    if proxy: ydl_opts['proxy']=proxy
+    if proxy:
+        ydl_opts['proxy']=proxy
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -254,26 +216,44 @@ def download_video_sync_max_realtime(url, tmpdir, watermark=False, proxy=None):
             fp=add_watermark_fixed(fp, LOGO_PATH, out)
         return fp
     except Exception as e:
-        logger.error(f"yt-dlp primary fail {e}")
         raise e
 
 def download_with_retry(url, tmpdir, watermark=False):
-    # Feature #6 Retry + Proxy
     last_err=None
-    proxies=[None]+PROXY_LIST
+    # FIXED: Build valid proxy list, skip bad ones
+    valid_proxies=[None]
+    for p in PROXY_LIST:
+        p=p.strip()
+        if not p: continue
+        if "proxy1" in p or "proxy2" in p or "example" in p:
+            continue
+        try:
+            parsed=urlparse(p)
+            if parsed.scheme and parsed.netloc:
+                valid_proxies.append(p)
+            else:
+                logger.warning(f"Invalid proxy skipped: {p}")
+        except:
+            logger.warning(f"Invalid proxy skipped: {p}")
+
+    logger.info(f"Trying download with {len(valid_proxies)} options (None + {len(valid_proxies)-1} proxies)")
+
     for attempt in range(3):
-        for proxy in proxies:
+        for proxy in valid_proxies:
             try:
-                if proxy: logger.info(f"Retry {attempt+1} with proxy {proxy[:20]}")
+                if proxy: logger.info(f"Attempt {attempt+1} via proxy")
                 return download_video_sync_max_realtime(url, tmpdir, watermark, proxy)
             except Exception as e:
                 last_err=e
-                err_str=str(e).lower()
-                if "private" in err_str or "deleted" in err_str or "not available" in err_str:
+                es=str(e).lower()
+                if "private" in es or "deleted" in es or "not available" in es:
                     raise Exception("private_video")
-                if "403" in err_str or "blocked" in err_str:
+                if "proxy" in es and ("unable" in es or "failed to resolve" in es or "nameResolution" in es):
+                    logger.warning(f"Proxy {proxy} failed, skipping")
                     continue
-                time.sleep(1)
+                if "403" in es or "blocked" in es:
+                    continue
+                time.sleep(0.5)
     raise last_err or Exception("download_failed")
 
 def download_mp3_fixed(url, tmpdir):
@@ -299,7 +279,6 @@ async def delete_after(context: ContextTypes.DEFAULT_TYPE):
     except: pass
 
 def check_antispam(user_id):
-    # Feature #2 Anti-spam - 5 req/min
     now=time.time()
     USER_REQUESTS[user_id]=[t for t in USER_REQUESTS[user_id] if now-t<60]
     if len(USER_REQUESTS[user_id])>=5:
@@ -310,18 +289,13 @@ def check_antispam(user_id):
 async def process_tiktok(update:Update, context, url:str):
     global LIVE_DOWNLOADS, STATS
     user_id=update.effective_user.id
-    # DB user
     try:
         lang=get_user_lang(update.effective_user)
         db_query("INSERT OR IGNORE INTO users (user_id, lang, joined_at) VALUES (?,?,?)", (user_id, lang, datetime.now().isoformat()))
     except: pass
-
-    # Anti-spam check
     ok, wait_sec=check_antispam(user_id)
     if not ok:
         return await update.message.reply_text(t(user_id, "error_limit", sec=wait_sec))
-
-    # Feature #1 Cache check
     h=url_hash(url)
     try:
         conn=sqlite3.connect(DB_FILE); c=conn.cursor()
@@ -338,9 +312,8 @@ async def process_tiktok(update:Update, context, url:str):
                 context.job_queue.run_once(delete_after, when=AUTO_DELETE_MIN*60, data={'chat_id':sent.chat_id,'msg_id':sent.message_id})
                 return
             except: pass
-    except Exception as e: logger.error(f"Cache check {e}")
+    except Exception as e: logger.error(f"Cache {e}")
 
-    # Queue system
     if DOWNLOAD_SEM.locked():
         pos=len(QUEUE_DEQUE)+1
         QUEUE_DEQUE.append(user_id)
@@ -399,10 +372,7 @@ async def process_tiktok(update:Update, context, url:str):
                 await m.edit_text(f"📦 {size_mb:.1f}MB Large - Uploading to cloud... 🚀", parse_mode=ParseMode.HTML)
                 link, service = await asyncio.to_thread(upload_large_file_real, path)
                 if link:
-                    kb=InlineKeyboardMarkup([
-                        [InlineKeyboardButton(f"📦 Catbox Full Quality • {size_mb:.1f}MB 🚀", url=link)],
-                        [InlineKeyboardButton(f"❤️ Favorite", callback_data=f"fav_{short_id}"), InlineKeyboardButton("🗑️ Delete", callback_data=f"del_{short_id}")],
-                    ])
+                    kb=InlineKeyboardMarkup([[InlineKeyboardButton(f"📦 Catbox Full Quality • {size_mb:.1f}MB 🚀", url=link)], [InlineKeyboardButton(f"❤️ Favorite", callback_data=f"fav_{short_id}")]] )
                     sent=await update.message.reply_text(caption+f"\n\n☁️ <b>{service}</b>\n🔗 <code>{html.escape(link)}</code>", reply_markup=kb, parse_mode=ParseMode.HTML)
                     context.job_queue.run_once(delete_after, when=AUTO_DELETE_MIN*60, data={'chat_id':sent.chat_id,'msg_id':sent.message_id})
                 try: await m.delete()
@@ -418,7 +388,6 @@ async def process_tiktok(update:Update, context, url:str):
             with open(path,'rb') as vf:
                 sent=await update.message.reply_video(video=vf, thumbnail=thumb_file, caption=caption, supports_streaming=True, reply_markup=kb, parse_mode=ParseMode.HTML, read_timeout=180, write_timeout=180)
             if thumb_file: thumb_file.close()
-            # Save to cache & history (Feature 1,5)
             try:
                 file_id=sent.video.file_id
                 db_query("INSERT OR REPLACE INTO cache (url_hash, url, file_id, size, title, author, created_at) VALUES (?,?,?,?,?,?,?)", (h, url, file_id, size_mb, info['title'], info['author'], datetime.now().isoformat()))
@@ -432,13 +401,12 @@ async def process_tiktok(update:Update, context, url:str):
             stop_updating=True
             err=str(e).lower()
             logger.error(f"Process {e}", exc_info=True)
-            # Feature #7 Better Errors
             if "private_video" in err or "private" in err or "deleted" in err:
                 msg=t(user_id, "error_private")
             elif "403" in err or "blocked" in err or "region" in err:
                 msg=t(user_id, "error_region")
             else:
-                msg=f"❌ Error: {html.escape(str(e)[:200])}\n\nTry again or different link"
+                msg=f"❌ Error: {html.escape(str(e)[:200])}\n\nTry again"
             try: await m.edit_text(msg, parse_mode=ParseMode.HTML)
             except: pass
         finally:
@@ -526,11 +494,7 @@ async def start_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     try: db_query("INSERT OR IGNORE INTO users (user_id, lang, joined_at) VALUES (?,?,?)", (user_id, lang, datetime.now().isoformat()))
     except: pass
     total_users=len(STATS['users']) if isinstance(STATS['users'], set) else 0
-    webapp_btn=InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌐 Web App", web_app=WebAppInfo(url=WEBAPP_URL))],
-        [InlineKeyboardButton("📜 History", callback_data="show_history"), InlineKeyboardButton("❤️ Favorites", callback_data="show_fav")],
-        [InlineKeyboardButton("📊 Stats", callback_data="show_stats_btn")]
-    ])
+    webapp_btn=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Web App", web_app=WebAppInfo(url=WEBAPP_URL))],[InlineKeyboardButton("📜 History", callback_data="show_history"), InlineKeyboardButton("❤️ Favorites", callback_data="show_fav")],[InlineKeyboardButton("📊 Stats", callback_data="show_stats_btn")]])
     await update.message.reply_text(t(user_id, "welcome", lang=lang)+f"\n━━━━━━━━━━━━━━━\n📊 {STATS['total']} | 👥 {total_users} | 🔴 {LIVE_DOWNLOADS} live\n💾 Cache: instant repeat\n📦 1GB Large File ✅\n⚡ Real-Time 0-100%", reply_markup=webapp_btn, parse_mode=ParseMode.HTML)
 
 async def history_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
@@ -544,27 +508,27 @@ async def history_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
 async def fav_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     user_id=update.effective_user.id
     rows=db_query("SELECT title, url FROM favorites WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,), fetch=True)
-    if not rows: return await update.message.reply_text("❤️ No favorites yet - tap ❤️ Favorite button")
+    if not rows: return await update.message.reply_text("❤️ No favorites yet")
     txt=f"❤️ <b>{t(user_id,'fav_list')}</b>:\n━━━━━━━━━━━━━━━\n"
     for title, url in rows: txt+=f"• {html.escape(title[:30])}\n<code>{html.escape(url[:40])}</code>\n\n"
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
 async def admin_panel(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID and update.effective_user.id!=ADMIN_ID: return await update.message.reply_text("Not admin")
-    rows=db_query("SELECT COUNT(*), SUM(size) FROM cache", fetch=True)
+    rows=db_query("SELECT COUNT(*) FROM cache", fetch=True)
     cache_count=rows[0][0] if rows else 0
-    await update.message.reply_text(f"🔐 <b>MAX DOWNLOADER ADMIN PRO</b>\nTotal: {STATS['total']}\nCache: {cache_count} videos (instant)\nQueue: {len(QUEUE_DEQUE)} waiting\nLive: {LIVE_DOWNLOADS}/3\nLogo: {os.path.exists(LOGO_PATH)}\nDB: SQLite + Cache\nLanguages: EN, AR, HI, RU\n\n/broadcast <msg>\n/stats\n/history\n/favorites\n/cache_clear", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"🔐 <b>MAX DOWNLOADER ADMIN PRO</b>\nTotal: {STATS['total']}\nCache: {cache_count}\nQueue: {len(QUEUE_DEQUE)}\nLive: {LIVE_DOWNLOADS}/3\nProxies: {len(PROXY_LIST)} valid\nDB: SQLite\n\n/broadcast <msg>\n/stats\n/cache_clear", parse_mode=ParseMode.HTML)
 
 async def stats_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     rows=db_query("SELECT COUNT(*) FROM users", fetch=True)
     users=rows[0][0] if rows else len(STATS['users'])
     rows2=db_query("SELECT COUNT(*) FROM cache", fetch=True)
     cache=rows2[0][0] if rows2 else 0
-    await update.message.reply_text(f"📊 <b>MAX DOWNLOADER STATS PRO</b>\nTotal: {STATS['total']}\nUsers: {users}\nCache: {cache} (instant)\nLive: {LIVE_DOWNLOADS}/3\nQueue: {len(QUEUE_DEQUE)}\nServed: {STATS['total_size']/1024:.2f} GB\nLanguages: 4\nDB: SQLite", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"📊 <b>MAX DOWNLOADER STATS PRO</b>\nTotal: {STATS['total']}\nUsers: {users}\nCache: {cache}\nLive: {LIVE_DOWNLOADS}/3\nServed: {STATS['total_size']/1024:.2f} GB\nProxies: {len(PROXY_LIST)}", parse_mode=ParseMode.HTML)
 
 async def broadcast_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID and update.effective_user.id!=ADMIN_ID: return
-    if not context.args: return await update.message.reply_text("Usage: /broadcast Hello users!")
+    if not context.args: return await update.message.reply_text("Usage: /broadcast Hello!")
     msg=" ".join(context.args)
     rows=db_query("SELECT user_id FROM users", fetch=True)
     sent=0
@@ -631,7 +595,7 @@ def main():
     app.add_handler(CallbackQueryHandler(extra_callback))
     app.add_handler(InlineQueryHandler(inline_mode))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    logger.info(f"MAX DOWNLOADER PRO Running - Cache+Queue+DB+History+Fav+Proxy+Lang+WebApp")
+    logger.info(f"MAX DOWNLOADER PRO FIXED - Proxies: {len(PROXY_LIST)} valid - {PROXY_LIST}")
     app.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":

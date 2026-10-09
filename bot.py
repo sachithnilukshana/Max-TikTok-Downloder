@@ -23,11 +23,11 @@ BOT_USERNAME=os.getenv("BOT_USERNAME","@YourBot")
 LOGO_PATH="TIKTOKLOGO.png"
 
 if not BOT_TOKEN: raise ValueError("BOT_TOKEN missing")
-if not os.path.exists(LOGO_PATH): logger.warning(f"{LOGO_PATH} not found - watermark disabled")
 
 STATS_FILE="stats.json"
 URL_STORE={}
 LIVE_DOWNLOADS=0
+progress_data_global={"pct":0,"speed":"","eta":"","downloaded":"","total":""}
 
 def load_stats():
     try:
@@ -66,79 +66,39 @@ def beautiful_caption(info, size, elapsed, user_name):
         f"⏰ Auto-delete {AUTO_DELETE_MIN}min"
     )
 
-# ===== LARGE FILE FIX - REAL WORKING =====
-def upload_large_file_real(fp, progress_msg=None, loop=None):
+def upload_large_file_real(fp):
     size_mb=os.path.getsize(fp)/(1024*1024)
     logger.info(f"Large upload {size_mb:.1f}MB")
-
-    # 1. Try Litterbox first for >200MB (your 456MB case)
     if size_mb > 100:
         try:
-            logger.info("Litterbox 1GB for 456MB")
             with open(fp,'rb') as f:
-                r=requests.post(
-                    "https://litterbox.catbox.moe/resources/internals/api.php",
-                    data={"reqtype":"fileupload","time":"72h"},
-                    files={"fileToUpload":(os.path.basename(fp), f, "video/mp4")},
-                    timeout=600
-                )
-            logger.info(f"Litterbox response: {r.status_code} {r.text[:100]}")
-            if r.status_code==200 and "http" in r.text and "litter" in r.text:
-                return r.text.strip(), "Litterbox 1GB 72h"
-        except Exception as e:
-            logger.error(f"Litterbox fail {e}")
-
-    # 2. Catbox for <200MB
+                r=requests.post("https://litterbox.catbox.moe/resources/internals/api.php", data={"reqtype":"fileupload","time":"72h"}, files={"fileToUpload":(os.path.basename(fp), f, "video/mp4")}, timeout=600)
+            logger.info(f"Litterbox {r.status_code} {r.text[:120]}")
+            if r.status_code==200 and "http" in r.text: return r.text.strip(), "Litterbox 1GB 72h"
+        except Exception as e: logger.error(f"Litterbox {e}")
     if size_mb < 200:
         try:
             with open(fp,'rb') as f:
                 r=requests.post("https://catbox.moe/user/api.php", data={"reqtype":"fileupload"}, files={"fileToUpload":f}, timeout=600)
-            if r.status_code==200 and "http" in r.text and "catbox" in r.text:
-                return r.text.strip(), "Catbox.moe"
-        except Exception as e:
-            logger.error(f"Catbox fail {e}")
-
-    # 3. GoFile 10GB fallback
+            if r.status_code==200 and "http" in r.text: return r.text.strip(), "Catbox.moe"
+        except Exception as e: logger.error(f"Catbox {e}")
     try:
-        logger.info("GoFile 10GB")
         r=requests.get("https://api.gofile.io/servers", timeout=20)
         server=r.json()['data']['servers'][0]['name']
         with open(fp,'rb') as f:
             r=requests.post(f"https://{server}.gofile.io/uploadFile", files={"file":f}, timeout=600)
         j=r.json()
-        logger.info(f"GoFile {j}")
-        if j['status']=='ok':
-            return j['data']['downloadPage'], "GoFile 10GB"
-    except Exception as e:
-        logger.error(f"GoFile fail {e}")
-
+        if j['status']=='ok': return j['data']['downloadPage'], "GoFile 10GB"
+    except Exception as e: logger.error(f"GoFile {e}")
     return None, None
 
 def add_watermark_fixed(video_path, logo_path, output_path):
-    if not os.path.exists(logo_path):
-        logger.warning("Logo not found for watermark")
-        return video_path
-    if not os.path.exists(video_path):
-        return video_path
+    if not os.path.exists(logo_path): return video_path
     try:
-        # FIXED FILTER - simple overlay bottom right
-        cmd=[
-            "ffmpeg","-y",
-            "-i", video_path,
-            "-i", logo_path,
-            "-filter_complex", "[1:v]scale=iw*0.18:-1[wm];[0:v][wm]overlay=W-w-20:H-h-20:format=auto,format=yuv420p",
-            "-c:a","copy",
-            "-movflags","+faststart",
-            output_path
-        ]
-        result=subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
-            logger.info("Watermark success")
-            return output_path
-        else:
-            logger.error(f"Watermark ffmpeg error: {result.stderr.decode()[:500]}")
-    except Exception as e:
-        logger.error(f"Watermark exception {e}")
+        cmd=["ffmpeg","-y","-i",video_path,"-i",logo_path,"-filter_complex","[1:v]scale=iw*0.18:-1[wm];[0:v][wm]overlay=W-w-20:H-h-20:format=auto,format=yuv420p","-c:a","copy","-movflags","+faststart",output_path]
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        if os.path.exists(output_path) and os.path.getsize(output_path)>10000: return output_path
+    except Exception as e: logger.error(f"WM {e}")
     return video_path
 
 def get_tiktok_info(url, tmpdir):
@@ -161,35 +121,23 @@ def get_tiktok_info(url, tmpdir):
         i=ydl.extract_info(url, download=False)
         return {'title':i.get('title','')[:80],'author':i.get('uploader','tiktok'),'duration':i.get('duration',0),'thumb':None,'url':url}
 
-# ===== REAL TIME PROGRESS BAR =====
-class RealTimeProgress:
-    def __init__(self, loop, message):
-        self.loop=loop
-        self.message=message
-        self.last_edit=0
-        self.last_pct=0
+def make_hook():
+    def hook(d):
+        if d['status']=='downloading':
+            try:
+                pct_str=d.get('_percent_str','0%').replace('%','').strip()
+                pct=float(pct_str)
+                progress_data_global["pct"]=pct
+                progress_data_global["speed"]=d.get('_speed_str','').strip()
+                progress_data_global["eta"]=d.get('_eta_str','').strip()
+                progress_data_global["downloaded"]=d.get('_downloaded_bytes_str','').strip()
+                progress_data_global["total"]=d.get('_total_bytes_str','').strip()
+            except: pass
+    return hook
 
-    def hook(self, d):
-        if d['status']!='downloading': return
-        try:
-            pct_str=d.get('_percent_str','0%').replace('%','').strip()
-            pct=float(pct_str)
-        except: pct=0
-        now=time.time()
-        if now-self.last_edit < 1.2 and pct < 99: return
-        if abs(pct-self.last_pct) < 2 and pct < 99: return
-        self.last_edit=now
-        self.last_pct=pct
-        speed=d.get('_speed_str','').strip()
-        eta=d.get('_eta_str','').strip()
-        bar=progress_bar(pct)
-        text=f"🚀 <b>MAX DOWNLOADER</b>\n{bar}\n⚡ {speed} | ⏰ {eta}\n📦 Downloading FULL..."
-        try:
-            asyncio.run_coroutine_threadsafe(self.message.edit_text(text, parse_mode=ParseMode.HTML), self.loop)
-        except: pass
-
-def download_video_sync_max(url, tmpdir, quality="hd", watermark=False, progress_obj=None):
+def download_video_sync_max_realtime(url, tmpdir, watermark=False):
     import yt_dlp
+    progress_data_global["pct"]=0
     fp=os.path.join(tmpdir, f"{uuid.uuid4().hex}.mp4")
     ydl_opts={
         'format':'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -200,7 +148,7 @@ def download_video_sync_max(url, tmpdir, quality="hd", watermark=False, progress
         'no_warnings':True,
         'noplaylist':True,
         'nocheckcertificate':True,
-        'progress_hooks':[progress_obj.hook] if progress_obj else [],
+        'progress_hooks':[make_hook()],
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -212,44 +160,46 @@ def download_video_sync_max(url, tmpdir, quality="hd", watermark=False, progress
             out=os.path.join(tmpdir, f"wm_{uuid.uuid4().hex}.mp4")
             fp=add_watermark_fixed(fp, LOGO_PATH, out)
         return fp
-    except Exception as e:
-        logger.error(f"yt-dlp fail {e} - fallback tikwm")
-        try:
-            r=requests.get(f"https://www.tikwm.com/api/?url={url}&hd=1", headers={'User-Agent':'Mozilla/5.0'}, timeout=20)
-            j=r.json(); d=j['data']
-            vurl=d.get('hdplay') or d.get('play')
-            fp2=os.path.join(tmpdir, f"tikwm_{uuid.uuid4().hex}.mp4")
-            with requests.get(vurl, stream=True, timeout=600) as r2:
-                with open(fp2,'wb') as f:
-                    for chunk in r2.iter_content(chunk_size=1024*1024*2):
-                        if chunk: f.write(chunk)
-            if watermark:
-                out=os.path.join(tmpdir, f"wm_{uuid.uuid4().hex}.mp4")
-                fp2=add_watermark_fixed(fp2, LOGO_PATH, out)
-            return fp2
-        except Exception as e2:
-            logger.error(f"tikwm fail {e2}")
-            raise e
+    except:
+        r=requests.get(f"https://www.tikwm.com/api/?url={url}&hd=1", headers={'User-Agent':'Mozilla/5.0'}, timeout=20)
+        j=r.json(); d=j['data']
+        vurl=d.get('hdplay') or d.get('play')
+        fp2=os.path.join(tmpdir, f"tikwm_{uuid.uuid4().hex}.mp4")
+        with requests.get(vurl, stream=True, timeout=600) as r2:
+            total=int(r2.headers.get('content-length',0))
+            downloaded=0
+            with open(fp2,'wb') as f:
+                for chunk in r2.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded+=len(chunk)
+                        if total>0:
+                            pct=downloaded/total*100
+                            progress_data_global["pct"]=pct
+                            progress_data_global["downloaded"]=f"{downloaded/1024/1024:.1f}MB"
+                            progress_data_global["total"]=f"{total/1024/1024:.1f}MB"
+        if watermark:
+            out=os.path.join(tmpdir, f"wm_{uuid.uuid4().hex}.mp4")
+            fp2=add_watermark_fixed(fp2, LOGO_PATH, out)
+        return fp2
 
-def download_mp3_fixed(url, tmpdir, progress_obj=None):
+def download_mp3_fixed(url, tmpdir):
     import yt_dlp
-    fp=os.path.join(tmpdir, f"audio_{uuid.uuid4().hex}.mp3")
+    progress_data_global["pct"]=0
     outtmpl=os.path.join(tmpdir, f"audio_{uuid.uuid4().hex}.%(ext)s")
     ydl_opts={
         'format':'bestaudio/best',
         'outtmpl':outtmpl,
         'quiet':True,
         'no_warnings':True,
-        'progress_hooks':[progress_obj.hook] if progress_obj else [],
+        'progress_hooks':[make_hook()],
         'postprocessors':[{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'192'}],
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
-    # Find mp3
     for f in os.listdir(tmpdir):
-        if f.endswith('.mp3'):
-            return os.path.join(tmpdir,f)
-    raise FileNotFoundError("MP3 not created")
+        if f.endswith('.mp3'): return os.path.join(tmpdir,f)
+    raise FileNotFoundError("MP3 failed")
 
 async def delete_after(context: ContextTypes.DEFAULT_TYPE):
     try: await context.bot.delete_message(chat_id=context.job.data['chat_id'], message_id=context.job.data['msg_id'])
@@ -261,16 +211,40 @@ async def process_tiktok(update:Update, context, url:str):
     t0=datetime.now()
     tmpdir=tempfile.mkdtemp()
     m=await update.message.reply_text("🚀 <b>MAX DOWNLOADER</b>\n"+progress_bar(0), parse_mode=ParseMode.HTML)
-    loop=asyncio.get_running_loop()
-    progress=RealTimeProgress(loop, m)
+    progress_data_global["pct"]=0
+    stop_updating=False
     try:
-        await update.effective_chat.send_action(ChatAction.TYPING)
         info=await asyncio.to_thread(get_tiktok_info, url, tmpdir)
-        await m.edit_text(f"🚀 <b>MAX DOWNLOADER</b>\nFound: {info['duration']}s\n"+progress_bar(10), parse_mode=ParseMode.HTML)
-
+        async def realtime_updater():
+            last_pct=-1
+            while not stop_updating:
+                pct=progress_data_global.get("pct",0)
+                speed=progress_data_global.get("speed","")
+                eta=progress_data_global.get("eta","")
+                down=progress_data_global.get("downloaded","")
+                total=progress_data_global.get("total","")
+                if abs(pct-last_pct)>=1 or pct==0:
+                    bar=progress_bar(pct)
+                    try:
+                        await m.edit_text(
+                            f"🚀 <b>MAX DOWNLOADER</b> 🚀\n"
+                            f"━━━━━━━━━━━━━━━\n"
+                            f"🎬 {info['duration']}s video\n"
+                            f"{bar}\n"
+                            f"📦 {down} / {total}\n"
+                            f"⚡ {speed} | ⏰ {eta}\n"
+                            f"🔴 Live: {LIVE_DOWNLOADS}",
+                            parse_mode=ParseMode.HTML
+                        )
+                        last_pct=pct
+                    except: pass
+                await asyncio.sleep(0.8)
+        updater_task=asyncio.create_task(realtime_updater())
         await update.effective_chat.send_action(ChatAction.UPLOAD_VIDEO)
-        path=await asyncio.to_thread(download_video_sync_max, url, tmpdir, "hd", False, progress)
-
+        path=await asyncio.to_thread(download_video_sync_max_realtime, url, tmpdir, False)
+        stop_updating=True
+        try: await updater_task
+        except: pass
         size_mb=os.path.getsize(path)/(1024*1024)
         elapsed=(datetime.now()-t0).total_seconds()
         STATS['total']+=1
@@ -278,36 +252,29 @@ async def process_tiktok(update:Update, context, url:str):
         try: STATS['users'].add(update.effective_user.id)
         except: pass
         save_stats({"total":STATS['total'],"total_size":STATS['total_size'],"users":list(STATS['users']) if isinstance(STATS['users'], set) else STATS['users']})
-
         short_id=str(uuid.uuid4())[:8]
         URL_STORE[short_id]=info
         user_name=update.effective_user.first_name or "Friend"
         caption=beautiful_caption(info, size_mb, elapsed, user_name)
-
+        await m.edit_text(f"🚀 <b>MAX DOWNLOADER</b>\n{progress_bar(100)}\n✅ Done! Uploading to Telegram...", parse_mode=ParseMode.HTML)
         if size_mb > MAX_SIZE_MB:
-            await m.edit_text(f"📦 {size_mb:.1f}MB > {MAX_SIZE_MB}MB\nUploading to cloud... 🚀\n"+progress_bar(90), parse_mode=ParseMode.HTML)
+            await m.edit_text(f"📦 {size_mb:.1f}MB Large - Uploading to cloud... 🚀", parse_mode=ParseMode.HTML)
             link, service = await asyncio.to_thread(upload_large_file_real, path)
             if link:
                 kb=InlineKeyboardMarkup([
                     [InlineKeyboardButton(f"📦 Catbox Full Quality • {size_mb:.1f}MB 🚀", url=link)],
                     [InlineKeyboardButton(f"⬇️ Download Full HD • Max Downloader 💎", url=link)],
-                    [InlineKeyboardButton("🎬 HD 1080p", callback_data=f"hd_{short_id}"), InlineKeyboardButton("💧 Watermark", callback_data=f"wm_{short_id}")],
-                    [InlineKeyboardButton("🎵 MP3 Audio", callback_data=f"mp3_{short_id}"), InlineKeyboardButton("🗑️ Delete", callback_data=f"del_{short_id}")]
                 ])
                 sent=await update.message.reply_text(caption+f"\n\n☁️ <b>{service}</b>\n🔗 <code>{html.escape(link)}</code>", reply_markup=kb, parse_mode=ParseMode.HTML)
                 context.job_queue.run_once(delete_after, when=AUTO_DELETE_MIN*60, data={'chat_id':sent.chat_id,'msg_id':sent.message_id})
-            else:
-                await update.message.reply_text(f"❌ Failed upload {size_mb:.1f}MB - try again, servers busy")
             try: await m.delete()
             except: pass
             return
-
         kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎬 HD 1080p 💎", callback_data=f"hd_{short_id}")],
             [InlineKeyboardButton("📱 Original", callback_data=f"orig_{short_id}"), InlineKeyboardButton("💧 Watermark ✨", callback_data=f"wm_{short_id}")],
             [InlineKeyboardButton("🎵 MP3 Audio 🎧", callback_data=f"mp3_{short_id}"), InlineKeyboardButton("🗑️ Delete", callback_data=f"del_{short_id}")],
         ])
-        await update.effective_chat.send_action(ChatAction.UPLOAD_VIDEO)
         thumb_file = open(info['thumb'],'rb') if info['thumb'] and os.path.exists(info['thumb']) else None
         with open(path,'rb') as vf:
             sent=await update.message.reply_video(video=vf, thumbnail=thumb_file, caption=caption, supports_streaming=True, reply_markup=kb, parse_mode=ParseMode.HTML, read_timeout=180, write_timeout=180)
@@ -315,10 +282,9 @@ async def process_tiktok(update:Update, context, url:str):
         try: await m.delete()
         except: pass
         context.job_queue.run_once(delete_after, when=AUTO_DELETE_MIN*60, data={'chat_id':sent.chat_id,'msg_id':sent.message_id})
-
     except Exception as e:
         logger.error(f"Process {e}", exc_info=True)
-        try: await m.edit_text(f"❌ Error: {html.escape(str(e)[:200])}", parse_mode=ParseMode.HTML)
+        try: await m.edit_text(f"❌ {html.escape(str(e)[:200])}", parse_mode=ParseMode.HTML)
         except: pass
     finally:
         LIVE_DOWNLOADS-=1
@@ -334,28 +300,41 @@ async def button_handler(update:Update, context:ContextTypes.DEFAULT_TYPE):
     try:
         action, sid = data.split("_",1)
         info=URL_STORE.get(sid)
-        if not info: return await q.message.reply_text("Expired - send link again")
+        if not info: return await q.message.reply_text("Expired")
         tmpdir=tempfile.mkdtemp()
-        m=await q.message.reply_text(f"🚀 <b>MAX DOWNLOADER</b>\nProcessing {action.upper()}...\n"+progress_bar(5), parse_mode=ParseMode.HTML)
-        loop=asyncio.get_running_loop()
-        progress=RealTimeProgress(loop, m)
+        m=await q.message.reply_text(f"🚀 <b>MAX DOWNLOADER</b> {action.upper()}\n"+progress_bar(0), parse_mode=ParseMode.HTML)
+        progress_data_global["pct"]=0
+        stop_updating=False
+        async def realtime_updater_btn():
+            last_pct=-1
+            while not stop_updating:
+                pct=progress_data_global.get("pct",0)
+                if abs(pct-last_pct)>=1:
+                    try: await m.edit_text(f"🚀 <b>MAX DOWNLOADER</b> {action.upper()}\n{progress_bar(pct)}\n⚡ {progress_data_global.get('speed','')}", parse_mode=ParseMode.HTML)
+                    except: pass
+                    last_pct=pct
+                await asyncio.sleep(0.8)
+        updater_task=asyncio.create_task(realtime_updater_btn())
         try:
             if action=="mp3":
                 await q.message.chat.send_action(ChatAction.UPLOAD_VOICE)
-                await m.edit_text("🎵 Downloading audio...\n"+progress_bar(20), parse_mode=ParseMode.HTML)
-                mp3_path=await asyncio.to_thread(download_mp3_fixed, info['url'], tmpdir, progress)
-                await m.edit_text("🎵 Uploading MP3...\n"+progress_bar(90), parse_mode=ParseMode.HTML)
+                mp3_path=await asyncio.to_thread(download_mp3_fixed, info['url'], tmpdir)
+                stop_updating=True
+                try: await updater_task
+                except: pass
+                await m.edit_text("🎵 Uploading MP3...\n"+progress_bar(95), parse_mode=ParseMode.HTML)
                 with open(mp3_path,'rb') as af:
                     await q.message.reply_audio(audio=af, title=info['title'][:60], performer="Max Downloader")
                 await m.delete()
                 return
-
             await q.message.chat.send_action(ChatAction.UPLOAD_VIDEO)
-            is_wm = (action=="wm")
-            path=await asyncio.to_thread(download_video_sync_max, info['url'], tmpdir, "hd", is_wm, progress)
+            is_wm=(action=="wm")
+            path=await asyncio.to_thread(download_video_sync_max_realtime, info['url'], tmpdir, is_wm)
+            stop_updating=True
+            try: await updater_task
+            except: pass
             size_mb=os.path.getsize(path)/(1024*1024)
-
-            if size_mb > MAX_SIZE_MB:
+            if size_mb>MAX_SIZE_MB:
                 await m.edit_text(f"📦 {size_mb:.1f}MB Uploading...\n"+progress_bar(80), parse_mode=ParseMode.HTML)
                 link, service=await asyncio.to_thread(upload_large_file_real, path)
                 if link:
@@ -363,13 +342,13 @@ async def button_handler(update:Update, context:ContextTypes.DEFAULT_TYPE):
                     await q.message.reply_text(f"📦 FULL {size_mb:.1f}MB • {service}\n{link}", reply_markup=kb)
                     await m.delete()
                     return
-
-            await m.edit_text("⬆️ Uploading to Telegram...\n"+progress_bar(95), parse_mode=ParseMode.HTML)
-            tag = "💧 Watermark" if is_wm else "💎 FULL HD"
+            await m.edit_text("⬆️ Uploading...\n"+progress_bar(95), parse_mode=ParseMode.HTML)
+            tag="💧 Watermark" if is_wm else "💎 FULL HD"
             with open(path,'rb') as vf:
                 await q.message.reply_video(video=vf, caption=f"🚀 <b>MAX DOWNLOADER</b> • {tag} • {size_mb:.1f}MB", supports_streaming=True, parse_mode=ParseMode.HTML)
             await m.delete()
         finally:
+            stop_updating=True
             import shutil; shutil.rmtree(tmpdir, ignore_errors=True)
     except Exception as e:
         logger.error(f"Button {e}", exc_info=True)
@@ -378,24 +357,12 @@ async def button_handler(update:Update, context:ContextTypes.DEFAULT_TYPE):
 
 async def start_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     total_users=len(STATS['users']) if isinstance(STATS['users'], set) else 0
-    await update.message.reply_text(
-        f"🚀 <b>MAX DOWNLOADER</b> 🚀\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💎 1080p Full Quality\n"
-        f"📦 Large File 1GB Fixed (456MB ✅)\n"
-        f"💧 Watermark with {LOGO_PATH}\n"
-        f"🎵 MP3 Audio Fixed\n"
-        f"⚡ Real-Time Progress Bar\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 {STATS['total']} | 👥 {total_users} | 🔴 {LIVE_DOWNLOADS} live\n"
-        f"Send TikTok link ✨",
-        parse_mode=ParseMode.HTML
-    )
+    await update.message.reply_text(f"🚀 <b>MAX DOWNLOADER</b> 🚀\n━━━━━━━━━━━━━━━\n💎 1080p Full Quality\n📦 Large File 1GB Fixed ✅\n💧 Watermark {LOGO_PATH}\n🎵 MP3 Fixed\n⚡ Real-Time Progress 0-100%\n━━━━━━━━━━━━━━━\n📊 {STATS['total']} | 👥 {total_users} | 🔴 {LIVE_DOWNLOADS} live\nSend TikTok link ✨", parse_mode=ParseMode.HTML)
 
 async def admin_panel(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID and update.effective_user.id!=ADMIN_ID: return await update.message.reply_text("Not admin")
     total_users=len(STATS['users']) if isinstance(STATS['users'], set) else 0
-    await update.message.reply_text(f"🔐 <b>MAX DOWNLOADER ADMIN</b>\nTotal: {STATS['total']}\nUsers: {total_users}\nLive: {LIVE_DOWNLOADS}\nSize: {STATS['total_size']/1024:.2f}GB\nLogo exists: {os.path.exists(LOGO_PATH)}\nAuto-delete: {AUTO_DELETE_MIN}min", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"🔐 <b>MAX DOWNLOADER ADMIN</b>\nTotal: {STATS['total']}\nUsers: {total_users}\nLive: {LIVE_DOWNLOADS}\nSize: {STATS['total_size']/1024:.2f}GB\nLogo: {os.path.exists(LOGO_PATH)}\nAuto-delete: {AUTO_DELETE_MIN}min", parse_mode=ParseMode.HTML)
 
 async def stats_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     total_users=len(STATS['users']) if isinstance(STATS['users'], set) else 0
